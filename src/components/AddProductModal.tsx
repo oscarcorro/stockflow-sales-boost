@@ -1,228 +1,224 @@
-
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 
-interface InventoryItem {
-  name: string;
-  sku: string;
-  size: string;
-  color: string;
-  gender?: 'Hombre' | 'Mujer' | 'Unisex';
-  quantity: number;
-  location: string;
-  zone: 'sala' | 'almacen';
-}
+type Props = {
+  onAdd: () => void; // el padre refresca y cierra el modal
+};
 
-interface AddProductModalProps {
-  onAdd: (product: InventoryItem) => void;
-}
+const COLORS = ['Negro', 'Blanco', 'Rojo', 'Verde', 'Azul', 'Gris', 'Variado'] as const;
+const GENDERS = ['Hombre', 'Mujer', 'Unisex'] as const;
+const PRIORITIES = ['normal', 'urgent'] as const;
 
-const AddProductModal = ({ onAdd }: AddProductModalProps) => {
-  const [formData, setFormData] = useState<InventoryItem>({
-    name: '',
-    sku: '',
-    size: '',
-    color: '',
-    gender: undefined,
-    quantity: 0,
-    location: '',
-    zone: 'sala'
-  });
-  const [isLoading, setIsLoading] = useState(false);
+const AddProductModal: React.FC<Props> = ({ onAdd }) => {
   const { toast } = useToast();
+
+  // Estado del formulario
+  const [name, setName] = useState('');
+  const [sku, setSku] = useState('');
+  const [size, setSize] = useState('');                     // <- ahora texto libre
+  const [color, setColor] = useState<string>('');
+  const [gender, setGender] = useState<string>('Unisex');
+  const [brand, setBrand] = useState('');
+  const [category, setCategory] = useState('');
+  const [ubicacion, setUbicacion] = useState('');           // ubicacion_almacen
+  const [priority, setPriority] = useState<'normal' | 'urgent'>('normal');
+  const [price, setPrice] = useState<string>('');
+  const [stockSala, setStockSala] = useState<string>('0');
+  const [stockAlmacen, setStockAlmacen] = useState<string>('0');
+
+  const [submitting, setSubmitting] = useState(false);
+
+  const validate = () => {
+    if (!name.trim()) return 'El nombre es obligatorio';
+    if (!sku.trim()) return 'El SKU es obligatorio';
+    if (!size.trim()) return 'La talla es obligatoria';
+    if (!color) return 'El color es obligatorio';
+    if (price === '' || isNaN(Number(price))) return 'El precio es obligatorio y debe ser numérico';
+    if (stockSala === '' || isNaN(Number(stockSala))) return 'Stock sala debe ser numérico';
+    if (stockAlmacen === '' || isNaN(Number(stockAlmacen))) return 'Stock almacén debe ser numérico';
+    return null;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Validaciones
-    if (!formData.name.trim()) {
-      toast({
-        title: "Error",
-        description: "El nombre del producto es requerido",
-        variant: "destructive",
-      });
+    const err = validate();
+    if (err) {
+      toast({ title: 'Formulario incompleto', description: err, variant: 'destructive' });
       return;
     }
 
-    if (!formData.sku.trim()) {
-      toast({
-        title: "Error",
-        description: "El SKU es requerido",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!formData.size.trim()) {
-      toast({
-        title: "Error",
-        description: "La talla es requerida",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!formData.color.trim()) {
-      toast({
-        title: "Error",
-        description: "El color es requerido",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (formData.quantity < 0) {
-      toast({
-        title: "Error",
-        description: "La cantidad no puede ser negativa",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!formData.location.trim()) {
-      toast({
-        title: "Error",
-        description: "La ubicación es requerida",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsLoading(true);
-    
     try {
-      // Simular llamada a Supabase
-      await new Promise(resolve => setTimeout(resolve, 500));
-      onAdd(formData);
-    } catch (error) {
+      setSubmitting(true);
+
+      const payload = {
+        name: name.trim(),
+        sku: sku.trim(),
+        size: size.trim(),
+        color,
+        gender,
+        brand: brand.trim() || null,
+        category: category.trim() || null,
+        ubicacion_almacen: ubicacion.trim() || null,
+        // image_url eliminado
+        priority,
+        price: Number(price),
+        stock_sala: Number(stockSala),
+        stock_almacen: Number(stockAlmacen),
+        updated_at: new Date().toISOString(), // opcional si tienes trigger
+      };
+
+      const { error } = await supabase.from('inventory').insert([payload]);
+      if (error) throw error;
+
+      toast({ title: 'Producto añadido', description: 'El producto se guardó correctamente.' });
+
+      // Reset y notificar al padre
+      setName('');
+      setSku('');
+      setSize('');
+      setColor('');
+      setGender('Unisex');
+      setBrand('');
+      setCategory('');
+      setUbicacion('');
+      setPriority('normal');
+      setPrice('');
+      setStockSala('0');
+      setStockAlmacen('0');
+
+      onAdd();
+    } catch (e: any) {
       toast({
-        title: "Error",
-        description: "No se pudo añadir el producto",
-        variant: "destructive",
+        title: 'Error al añadir',
+        description: e?.message ?? 'No se pudo guardar el producto.',
+        variant: 'destructive',
       });
     } finally {
-      setIsLoading(false);
+      setSubmitting(false);
     }
-  };
-
-  const handleInputChange = (field: keyof InventoryItem, value: string | number) => {
-    setFormData(prev => ({
-      ...prev,
-      [field]: value
-    }));
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor="name">Nombre del producto *</Label>
-          <Input
-            id="name"
-            value={formData.name}
-            onChange={(e) => handleInputChange('name', e.target.value)}
-            placeholder="Ej: Camiseta Nike Dri-Fit"
-            required
-          />
+    <form onSubmit={handleSubmit} className="space-y-5">
+      {/* Fila 1: nombre / SKU / precio */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Nombre *</Label>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Camiseta Running Nike" />
         </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="sku">SKU *</Label>
-          <Input
-            id="sku"
-            value={formData.sku}
-            onChange={(e) => handleInputChange('sku', e.target.value.toUpperCase())}
-            placeholder="Ej: NK-DF-001"
-            required
-          />
+        <div>
+          <Label>SKU *</Label>
+          <Input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="NI-001-M" />
         </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor="size">Talla *</Label>
+        <div>
+          <Label>Precio (€) *</Label>
           <Input
-            id="size"
-            value={formData.size}
-            onChange={(e) => handleInputChange('size', e.target.value)}
-            placeholder="Ej: M, L, 42"
-            required
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="color">Color *</Label>
-          <Input
-            id="color"
-            value={formData.color}
-            onChange={(e) => handleInputChange('color', e.target.value)}
-            placeholder="Ej: Azul, Negro"
-            required
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="gender">Género</Label>
-          <Select onValueChange={(value) => handleInputChange('gender', value as 'Hombre' | 'Mujer' | 'Unisex')}>
-            <SelectTrigger>
-              <SelectValue placeholder="Seleccionar" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Hombre">Hombre</SelectItem>
-              <SelectItem value="Mujer">Mujer</SelectItem>
-              <SelectItem value="Unisex">Unisex</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor="quantity">Cantidad *</Label>
-          <Input
-            id="quantity"
             type="number"
-            min="0"
-            value={formData.quantity}
-            onChange={(e) => handleInputChange('quantity', parseInt(e.target.value) || 0)}
-            placeholder="0"
-            required
+            step="0.01"
+            inputMode="decimal"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder="49.90"
           />
         </div>
+      </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="location">Ubicación *</Label>
+      {/* Fila 2: talla (texto) / color / género */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Talla *</Label>
           <Input
-            id="location"
-            value={formData.location}
-            onChange={(e) => handleInputChange('location', e.target.value.toUpperCase())}
-            placeholder="Ej: P3-R-Z1"
-            required
+            value={size}
+            onChange={(e) => setSize(e.target.value)}
+            placeholder="M / 42 / 8.5US ..."
           />
         </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="zone">Zona *</Label>
-          <Select onValueChange={(value) => handleInputChange('zone', value as 'sala' | 'almacen')} defaultValue="sala">
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
+        <div>
+          <Label>Color *</Label>
+          <Select value={color} onValueChange={setColor}>
+            <SelectTrigger><SelectValue placeholder="Selecciona color" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="sala">Sala</SelectItem>
-              <SelectItem value="almacen">Almacén</SelectItem>
+              {COLORS.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label>Género</Label>
+          <Select value={gender} onValueChange={setGender}>
+            <SelectTrigger><SelectValue placeholder="Selecciona género" /></SelectTrigger>
+            <SelectContent>
+              {GENDERS.map((g) => <SelectItem key={g} value={g}>{g}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
       </div>
 
-      <div className="flex justify-end gap-2 pt-4">
-        <Button type="submit" disabled={isLoading} className="hover:bg-blue-600 transition-colors">
-          {isLoading ? 'Guardando...' : 'Guardar producto'}
+      {/* Fila 3: marca / categoría / prioridad */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Marca</Label>
+          <Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Asics / Nike / Adidas..." />
+        </div>
+        <div>
+          <Label>Categoría</Label>
+          <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Camisetas / Zapatillas..." />
+        </div>
+        <div>
+          <Label>Prioridad</Label>
+          <Select value={priority} onValueChange={(v) => setPriority(v as 'normal' | 'urgent')}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {PRIORITIES.map((p) => (
+                <SelectItem key={p} value={p}>{p === 'normal' ? 'Normal' : 'Urgente'}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Fila 4: ubicación / stocks */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <Label>Ubicación almacén</Label>
+          <Input
+            value={ubicacion}
+            onChange={(e) => setUbicacion(e.target.value)}
+            placeholder="P2-R-E3-A1"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-4 md:col-span-2">
+          <div>
+            <Label>Stock sala</Label>
+            <Input
+              type="number"
+              inputMode="numeric"
+              value={stockSala}
+              onChange={(e) => setStockSala(e.target.value)}
+              min={0}
+            />
+          </div>
+          <div>
+            <Label>Stock almacén</Label>
+            <Input
+              type="number"
+              inputMode="numeric"
+              value={stockAlmacen}
+              onChange={(e) => setStockAlmacen(e.target.value)}
+              min={0}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Acciones */}
+      <div className="flex items-center justify-end gap-3 pt-2">
+        <Button type="submit" disabled={submitting}>
+          {submitting ? 'Guardando…' : 'Añadir producto'}
         </Button>
       </div>
     </form>

@@ -137,3 +137,6 @@
     @apply bg-green-600 text-white border-green-600;
   }
 }
+
+/* Evitar scroll horizontal global */
+body { overflow-x: hidden; }

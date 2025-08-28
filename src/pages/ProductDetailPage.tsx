@@ -17,6 +17,7 @@ interface Product {
   location: string;
   imageUrl: string;
   priority: 'normal' | 'urgent';
+  price?: number | null;
 }
 
 const ProductDetailPage: React.FC = () => {
