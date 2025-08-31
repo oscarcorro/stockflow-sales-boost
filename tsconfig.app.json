@@ -21,10 +21,12 @@
     "noImplicitAny": false,
     "noFallthroughCasesInSwitch": false,
 
+    /* Alias + env types */
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
-    }
+      "@/*": ["src/*"]
+    },
+    "types": ["vite/client"]
   },
   "include": ["src"]
 }
