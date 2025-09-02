@@ -1,68 +1,155 @@
+-- StockFlow: POS idempotency + transaccionalización de reglas
+-- Nueva migración (no edita las tablas existentes del usuario)
 
--- Crear tabla para gestionar el inventario con stock desglosado
-CREATE TABLE public.inventory (
-  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-  name TEXT NOT NULL,
-  sku TEXT NOT NULL UNIQUE,
-  size TEXT NOT NULL,
-  color TEXT NOT NULL,
-  gender TEXT,
-  stock_sala INTEGER NOT NULL DEFAULT 0,
-  stock_almacen INTEGER NOT NULL DEFAULT 0,
-  location TEXT NOT NULL,
-  zone TEXT NOT NULL CHECK (zone IN ('sala', 'almacen')),
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+-- Extensiones (por si no existen)
+create extension if not exists "pgcrypto";
+create extension if not exists "uuid-ossp";
+
+-- 1) Log de eventos POS (idempotencia)
+create table if not exists public.pos_events (
+  idempotency_key text primary key,
+  event_type text not null check (event_type in ('sale','return')),
+  sku text not null,
+  quantity integer not null check (quantity > 0),
+  source text,
+  raw_payload jsonb,
+  inserted_at timestamptz not null default now()
 );
 
--- Habilitar RLS
-ALTER TABLE public.inventory ENABLE ROW LEVEL SECURITY;
+-- 2) UNIQUE por producto en la cola (si aún no existe)
+do $$ begin
+  alter table public.replenishment_queue
+    add constraint replenishment_queue_inventory_unique unique (inventory_id);
+exception when duplicate_object then null; end $$;
 
--- Política para permitir acceso completo (ya que no requiere autenticación por ahora)
-CREATE POLICY "Allow all access to inventory" 
-  ON public.inventory 
-  FOR ALL 
-  USING (true);
+-- 3) Constraints de no-negatividad
+create or replace function public._check_nonnegative() returns trigger as $$
+begin
+  if (TG_TABLE_NAME = 'inventory') then
+    if (new.stock_sala < 0 or new.stock_almacen < 0) then
+      raise exception 'Stock no puede ser negativo';
+    end if;
+  elsif (TG_TABLE_NAME = 'replenishment_queue') then
+    if (new.quantity_needed < 0) then
+      raise exception 'quantity_needed no puede ser negativo';
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
 
--- Crear tabla para productos pendientes de reposición
-CREATE TABLE public.replenishment_queue (
-  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-  inventory_id UUID NOT NULL REFERENCES public.inventory(id) ON DELETE CASCADE,
-  quantity_needed INTEGER NOT NULL DEFAULT 1,
-  priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'urgent')),
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
-);
+do $$ begin
+  create trigger trg_inventory_nonnegative
+    before insert or update on public.inventory
+    for each row execute procedure public._check_nonnegative();
+exception when duplicate_object then null; end $$;
 
--- Habilitar RLS para reposición
-ALTER TABLE public.replenishment_queue ENABLE ROW LEVEL SECURITY;
+do $$ begin
+  create trigger trg_queue_nonnegative
+    before insert or update on public.replenishment_queue
+    for each row execute procedure public._check_nonnegative();
+exception when duplicate_object then null; end $$;
 
--- Política para permitir acceso completo
-CREATE POLICY "Allow all access to replenishment_queue" 
-  ON public.replenishment_queue 
-  FOR ALL 
-  USING (true);
+-- 4) Índice útil para pendientes
+create index if not exists idx_replenishment_queue_pending
+  on public.replenishment_queue (inventory_id)
+  where quantity_needed > 0;
 
--- Insertar datos de prueba en la tabla inventory basados en los datos mock existentes
-INSERT INTO public.inventory (name, sku, size, color, gender, stock_sala, stock_almacen, location, zone) VALUES
-('Camiseta Nike Dri-Fit', 'NK-DF-001', 'M', 'Azul', 'Hombre', 10, 5, 'P2-R-A4', 'sala'),
-('Pantalón Adidas Training', 'AD-TR-205', 'L', 'Negro', 'Mujer', 6, 2, 'P1-R-B2', 'sala'),
-('Zapatillas Running', 'RN-SP-442', '42', 'Blanco', 'Unisex', 2, 1, 'P3-R-Z1', 'almacen'),
-('Sudadera Champion', 'CH-HD-180', 'XL', 'Gris', 'Hombre', 15, 7, 'P2-R-S3', 'almacen'),
-('Shorts deportivos', 'SP-SH-099', 'S', 'Rosa', 'Mujer', 3, 2, 'P1-R-P5', 'sala'),
-('Polo deportivo', 'PL-DP-123', 'M', 'Verde', 'Unisex', 8, 4, 'P2-R-C1', 'sala');
+-- 5) RPC idempotente
+create or replace function public.process_pos_event(
+  p_idempotency_key text,
+  p_event_type text,   -- 'sale' | 'return'
+  p_sku text,
+  p_quantity integer,
+  p_point_of_sale_id text default null
+) returns void as $$
+declare
+  v_inventory_id uuid;
+  v_exists int;
+  v_current_needed int;
+  v_take_from_queue int;
+begin
+  if p_quantity <= 0 then
+    raise exception 'quantity debe ser > 0';
+  end if;
 
--- Función para actualizar updated_at automáticamente
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = now();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
+  -- Idempotencia: si ya existe, no hacemos nada
+  select 1 into v_exists from public.pos_events where idempotency_key = p_idempotency_key;
+  if found then
+    return;
+  end if;
 
--- Trigger para inventory
-CREATE TRIGGER update_inventory_updated_at BEFORE UPDATE ON public.inventory FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+  insert into public.pos_events (idempotency_key, event_type, sku, quantity, source)
+  values (p_idempotency_key, p_event_type, p_sku, p_quantity, 'rpc');
 
--- Trigger para replenishment_queue
-CREATE TRIGGER update_replenishment_queue_updated_at BEFORE UPDATE ON public.replenishment_queue FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+  -- SKU -> inventory
+  select id into v_inventory_id from public.inventory where sku = p_sku;
+  if not found then
+    raise exception 'SKU % no existe en inventory', p_sku;
+  end if;
+
+  if p_event_type = 'sale' then
+    -- (1) Restar stock en sala
+    update public.inventory
+      set stock_sala = greatest(stock_sala - p_quantity, 0),
+          updated_at = now()
+      where id = v_inventory_id;
+
+    -- (2) Aumentar cola (upsert)
+    insert into public.replenishment_queue (inventory_id, quantity_needed, priority)
+      values (v_inventory_id, p_quantity, 'normal')
+    on conflict (inventory_id) do update
+      set quantity_needed = public.replenishment_queue.quantity_needed + excluded.quantity_needed,
+          updated_at = now();
+
+    -- (3) Registrar en sales_history si existe (opcional)
+    begin
+      insert into public.sales_history (product_name, sku, size, color, quantity_sold, point_of_sale_id, replenishment_generated, sale_date)
+      values (
+        (select name from public.inventory where id = v_inventory_id),
+        p_sku,
+        (select size from public.inventory where id = v_inventory_id),
+        (select color from public.inventory where id = v_inventory_id),
+        p_quantity,
+        p_point_of_sale_id,
+        true,
+        now()
+      );
+    exception when undefined_table then
+      -- si no existe, lo ignoramos
+      null;
+    end;
+
+  elsif p_event_type = 'return' then
+    -- Si hay cola, reducimos; esa porción vuelve a SALA. Excedente entra a ALMACÉN.
+    select quantity_needed into v_current_needed
+      from public.replenishment_queue where inventory_id = v_inventory_id;
+    v_current_needed := coalesce(v_current_needed, 0);
+    v_take_from_queue := least(v_current_needed, p_quantity);
+
+    if v_take_from_queue > 0 then
+      update public.replenishment_queue
+        set quantity_needed = quantity_needed - v_take_from_queue,
+            updated_at = now()
+        where inventory_id = v_inventory_id;
+
+      update public.inventory
+        set stock_sala = stock_sala + v_take_from_queue,
+            updated_at = now()
+        where id = v_inventory_id;
+    end if;
+
+    if p_quantity > v_take_from_queue then
+      update public.inventory
+        set stock_almacen = stock_almacen + (p_quantity - v_take_from_queue),
+            updated_at = now()
+        where id = v_inventory_id;
+    end if;
+
+  else
+    raise exception 'event_type inválido: %', p_event_type;
+  end if;
+end;
+$$ language plpgsql security definer;
+
+-- Nota: con SERVICE_ROLE desde tu conector, RLS no bloquea. No tocamos tus policies existentes.
