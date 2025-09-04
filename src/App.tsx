@@ -20,6 +20,9 @@ import NotFound from "./pages/NotFound";
 import PageTransition from "./components/PageTransition";
 import { useRouteDirection } from "./hooks/useRouteDirection";
 
+// ⬇️ NUEVO: import de la página de ingesta
+import IngestionWizardPage from "./pages/IngestionWizardPage";
+
 const queryClient = new QueryClient();
 
 const pickVariant = (pathname: string, dir: "forward" | "back") => {
@@ -94,6 +97,17 @@ const AnimatedRoutes = () => {
             </PageTransition>
           }
         />
+
+        {/* ⬇️ NUEVO: ruta a la página de ingesta */}
+        <Route
+          path="/ingest"
+          element={
+            <PageTransition variant={variant}>
+              <IngestionWizardPage />
+            </PageTransition>
+          }
+        />
+
         <Route
           path="*"
           element={

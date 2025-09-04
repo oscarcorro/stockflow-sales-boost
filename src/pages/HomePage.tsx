@@ -1,9 +1,8 @@
-
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Package, Search } from 'lucide-react';
+import { Package, Search, ScanBarcode } from 'lucide-react'; // ⬅️ NUEVO: ScanBarcode
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
@@ -14,6 +13,11 @@ const HomePage: React.FC = () => {
 
   const handleSearchClick = () => {
     navigate('/search');
+  };
+
+  // ⬇️ NUEVO: handler para ir al asistente de ingesta
+  const handleIngestionClick = () => {
+    navigate('/ingest');
   };
 
   return (
@@ -82,6 +86,33 @@ const HomePage: React.FC = () => {
                 className="bg-blue-500 hover:bg-blue-600 text-white px-8 py-3 text-lg font-semibold rounded-lg"
               >
                 Buscar productos
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* ⬇️ NUEVO: Opción 3: Ingesta de datos */}
+          <Card 
+            className="h-80 border-0 shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer transform hover:scale-105"
+            onClick={handleIngestionClick}
+          >
+            <CardContent className="h-full flex flex-col items-center justify-center p-8 text-center bg-gradient-to-br from-teal-50 to-emerald-50">
+              <div className="w-20 h-20 bg-teal-500 rounded-full flex items-center justify-center mb-6">
+                <ScanBarcode className="h-10 w-10 text-white" />
+              </div>
+              
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">
+                Ingesta de datos (CSV / escáner)
+              </h2>
+              
+              <p className="text-gray-600 mb-8 text-lg leading-relaxed">
+                Sube un CSV y mapea columnas a tu formato estándar. Próximamente: escaneo con cámara.
+              </p>
+              
+              <Button 
+                onClick={handleIngestionClick}
+                className="bg-teal-500 hover:bg-teal-600 text-white px-8 py-3 text-lg font-semibold rounded-lg"
+              >
+                Abrir asistente
               </Button>
             </CardContent>
           </Card>
