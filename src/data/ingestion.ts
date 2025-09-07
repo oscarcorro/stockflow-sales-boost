@@ -1,11 +1,9 @@
 // src/data/ingestion.ts
 import { supabase } from "@/integrations/supabase/client";
-import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
- * Tus tipos generados aún no incluyen las tablas de ingesta.
- * Para no romper el tipado global, creamos un "cliente no tipado"
- * SOLO para estas tablas nuevas, sin usar `any`.
+ * Versión compat sin `any` y sin necesitar types.ts regenerado.
+ * Definimos interfaces mínimas para `from().insert()` y `rpc()`.
  */
 
 type Json =
@@ -16,32 +14,8 @@ type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
-type UntypedRow = Record<string, unknown>;
+// ----- Tipos de alto nivel que usa el frontend -----
 
-/** DB genérica mínima para trabajar sin `any` */
-type UntypedDB = {
-  __InternalSupabase: { PostgrestVersion: string };
-  public: {
-    Tables: Record<
-      string,
-      {
-        Row: UntypedRow;
-        Insert: UntypedRow;
-        Update: UntypedRow;
-        Relationships: never[];
-      }
-    >;
-    Views: Record<string, unknown>;
-    Functions: Record<string, unknown>;
-    Enums: Record<string, unknown>;
-    CompositeTypes: Record<string, unknown>;
-  };
-};
-
-/** Cliente "no tipado" sólo para ingestion_* */
-const sb: SupabaseClient<UntypedDB> = supabase as unknown as SupabaseClient<UntypedDB>;
-
-/** Tipos de alto nivel (nuestros), sin depender del `types.ts` generado */
 export type IngestionRun = {
   id: string;
   source: string;
@@ -58,25 +32,57 @@ export type IngestionRun = {
 
 type IngestionItemInsert = {
   run_id: string;
-  raw: Json;              // fila original (lo que viene del wizard)
-  normalized?: Json;      // reservado para el paso 3 (procesado server-side)
-  status?: "pending" | "normalized" | "upserted" | "error";
-  error_text?: string | null;
-  row_hash?: string | null;
+  raw: Json;
 };
 
-/** Crea un run de ingesta */
+// ----- Interfaces mínimas para evitar `any` -----
+
+type InsertCountOptions = { count?: "exact" | "planned" | "estimated"; defaultToNull?: boolean };
+
+interface InsertReturnForSelect {
+  select: (cols: string) => {
+    single: () => Promise<{ data: unknown; error: unknown }>;
+  };
+}
+
+interface FromInsertWithSelect {
+  insert: (values: Record<string, unknown>, options?: InsertCountOptions) => InsertReturnForSelect;
+}
+
+interface FromInsertWithCount {
+  insert: (values: unknown, options?: { count?: "exact" }) => Promise<{
+    error: unknown;
+    count: number | null;
+  }>;
+}
+
+interface MinimalSupabaseForInsertSelect {
+  from: (table: string) => FromInsertWithSelect;
+}
+
+interface MinimalSupabaseForInsertCount {
+  from: (table: string) => FromInsertWithCount;
+}
+
+interface MinimalSupabaseForRpc {
+  rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>;
+}
+
+// ----- API -----
+
+/** Crea un run de ingesta (staging) */
 export async function createIngestionRun(params: { source: string; notes?: string | null }) {
+  const sb = supabase as unknown as MinimalSupabaseForInsertSelect;
+
   const { data, error } = await sb
     .from("ingestion_runs")
-    .insert({ source: params.source, notes: params.notes ?? null } as UntypedRow)
+    .insert({ source: params.source, notes: params.notes ?? null })
     .select("*")
     .single();
 
-  if (error) throw error;
+  if (error) throw error as Error;
 
-  // Convertimos la fila genérica al tipo de alto nivel que usamos en el frontend
-  const row = data as UntypedRow;
+  const row = data as Record<string, unknown>;
   const run: IngestionRun = {
     id: String(row.id),
     source: String(row.source),
@@ -94,7 +100,7 @@ export async function createIngestionRun(params: { source: string; notes?: strin
   return run;
 }
 
-/** Inserta filas crudas en ingestion_items */
+/** Inserta filas crudas en ingestion_items (staging) */
 export async function insertIngestionItems(runId: string, items: unknown[]) {
   if (!items.length) return { count: 0 };
 
@@ -103,10 +109,25 @@ export async function insertIngestionItems(runId: string, items: unknown[]) {
     raw: raw as Json,
   }));
 
-  const { error, count } = await sb
-    .from("ingestion_items")
-    .insert(payload as unknown as UntypedRow[], { count: "exact" });
+  const sb = supabase as unknown as MinimalSupabaseForInsertCount;
 
-  if (error) throw error;
+  const { error, count } = await sb.from("ingestion_items").insert(payload, { count: "exact" });
+
+  if (error) throw error as Error;
   return { count: count ?? payload.length };
+}
+
+/** Procesa un run: vuelca a `inventory` usando la RPC `process_ingestion_run` */
+export async function processIngestionRun(runId: string, tenantId?: string | null) {
+  const sb = supabase as unknown as MinimalSupabaseForRpc;
+
+  const { data, error } = await sb.rpc("process_ingestion_run", {
+    p_run_id: runId,
+    p_tenant_id: tenantId ?? null,
+  });
+
+  if (error) throw error as Error;
+
+  const [row] = (data as Array<{ processed: number; succeeded: number; failed: number }>) ?? [];
+  return row ?? { processed: 0, succeeded: 0, failed: 0 };
 }

@@ -20,8 +20,9 @@ import NotFound from "./pages/NotFound";
 import PageTransition from "./components/PageTransition";
 import { useRouteDirection } from "./hooks/useRouteDirection";
 
-// ⬇️ NUEVO: import de la página de ingesta
+// ⬇️ Páginas de ingesta
 import IngestionWizardPage from "./pages/IngestionWizardPage";
+import IngestionProcessingPage from "./pages/IngestionProcessingPage"; // NUEVO
 
 const queryClient = new QueryClient();
 
@@ -98,12 +99,22 @@ const AnimatedRoutes = () => {
           }
         />
 
-        {/* ⬇️ NUEVO: ruta a la página de ingesta */}
+        {/* Ingesta: wizard */}
         <Route
           path="/ingest"
           element={
             <PageTransition variant={variant}>
               <IngestionWizardPage />
+            </PageTransition>
+          }
+        />
+
+        {/* Ingesta: pantalla de proceso y redirección */}
+        <Route
+          path="/ingest/run/:runId"
+          element={
+            <PageTransition variant={variant}>
+              <IngestionProcessingPage />
             </PageTransition>
           }
         />

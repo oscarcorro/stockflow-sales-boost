@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Search, Filter, Edit, House, Trash2, ShoppingCart, Plus, RefreshCw } from 'lucide-react';
+import { Search, Filter, Edit, House, Trash2, ShoppingCart, Plus, Upload } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -22,7 +22,6 @@ import { InventoryItem as UIInventoryItem } from '@/types/warehouse';
 // Tipos base generados desde Supabase
 type InventoryRow = Database['public']['Tables']['inventory']['Row'];
 type SalesInsert = Database['public']['Tables']['sales_history']['Insert'];
-type QueueRow = Database['public']['Tables']['replenishment_queue']['Row'];
 
 // Extendemos con campos “legacy” opcionales usados en UI
 type InventoryRowLegacy = InventoryRow & {
@@ -229,9 +228,17 @@ const InventoryTable: React.FC = () => {
     },
     onError: (err: unknown) => {
       console.error('Error registrando venta:', err);
-      const msg =
-        (err as any)?.message ??
-        'Error al registrar la venta. Revisa la consola por si hay una política RLS bloqueando la operación.';
+
+      // ✅ Sin `any`: discriminamos el tipo del error de forma segura
+      let msg = 'Error al registrar la venta. Revisa la consola por si hay una política RLS bloqueando la operación.';
+      if (err instanceof Error) {
+        msg = err.message;
+      } else if (typeof err === 'object' && err !== null && 'message' in err) {
+        const maybeMessage = (err as { message?: unknown }).message;
+        if (typeof maybeMessage === 'string') msg = maybeMessage;
+        else if (maybeMessage != null) msg = String(maybeMessage);
+      }
+
       toast({
         title: 'Error al registrar venta',
         description: msg,
@@ -311,9 +318,9 @@ const InventoryTable: React.FC = () => {
     }
   };
 
-  const handleUpdateInventory = () => {
-    queryClient.invalidateQueries({ queryKey: ['inventory'] });
-    toast({ title: 'Inventario actualizado', description: 'Sincronización completada' });
+  // NUEVO: botón "Añadir inventario" (redirige al wizard de CSV)
+  const handleAddInventory = () => {
+    navigate('/ingest');
   };
 
   const handleBackToDashboard = () => navigate('/');
@@ -428,13 +435,14 @@ const InventoryTable: React.FC = () => {
                   </DialogContent>
                 </Dialog>
 
+                {/* SUSTITUCIÓN: antes "Actualizar inventario" → ahora "Añadir inventario" */}
                 <Button
-                  onClick={handleUpdateInventory}
+                  onClick={handleAddInventory}
                   variant="outline"
                   className="flex items-center gap-2 hover:bg-blue-50 transition-colors"
                 >
-                  <RefreshCw className="h-4 w-4" />
-                  Actualizar inventario
+                  <Upload className="h-4 w-4" />
+                  Añadir inventario
                 </Button>
               </div>
             </div>
@@ -621,4 +629,3 @@ const InventoryTable: React.FC = () => {
 };
 
 export default InventoryTable;
-  
