@@ -8,6 +8,7 @@ import { parseCsvSimple } from "@/utils/csv";
 import { createIngestionRun, insertIngestionItems } from "@/data/ingestion";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
+import { House } from "lucide-react"; // ← añadido para el botón de volver
 
 type Mapping = Record<string, string>; // sourceHeader -> standardField | attribute:<key>
 
@@ -110,6 +111,19 @@ const IngestionWizardPage: React.FC = () => {
 
   return (
     <div className="p-4 md:p-8">
+      {/* ← ÚNICO CAMBIO: botón superior para volver al dashboard */}
+      <div className="max-w-5xl mx-auto pb-3">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate("/")}
+          className="flex items-center gap-2"
+        >
+          <House className="h-4 w-4" />
+          Volver al dashboard
+        </Button>
+      </div>
+
       <Card className="max-w-5xl mx-auto">
         <CardHeader>
           <CardTitle>Ingesta CSV (beta)</CardTitle>

@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { processIngestionRun } from "@/data/ingestion";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Loader2, CheckCircle2, AlertTriangle, House } from "lucide-react"; // ← añadido House
 
 type Result = { processed: number; succeeded: number; failed: number };
 
@@ -60,51 +60,66 @@ const IngestionProcessingPage: React.FC = () => {
   }, [runId, navigate, toast]);
 
   return (
-    <div className="p-6 flex items-center justify-center min-h-[70vh]">
-      <Card className="w-full max-w-xl">
-        <CardHeader>
-          <CardTitle>Procesando ingesta</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {status === "running" && (
-            <div className="flex flex-col items-center gap-3 text-center">
-              <Loader2 className="h-10 w-10 animate-spin" />
-              <p className="text-sm text-gray-600">
-                Estamos volcando los productos a <code>inventory</code>…
-              </p>
-            </div>
-          )}
+    <div className="p-6 min-h-[70vh]">
+      {/* ← ÚNICO CAMBIO: botón superior para volver al dashboard */}
+      <div className="max-w-xl mx-auto pb-3">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate("/")}
+          className="flex items-center gap-2"
+        >
+          <House className="h-4 w-4" />
+          Volver al dashboard
+        </Button>
+      </div>
 
-          {status === "success" && result && (
-            <div className="flex flex-col items-center gap-4 text-center">
-              <CheckCircle2 className="h-10 w-10 text-green-600" />
-              <div className="text-sm">
-                <div className="font-medium">¡Ingesta completada con éxito!</div>
-                <div className="text-gray-600 mt-1">{message}</div>
-                <div className="text-gray-500 mt-2">Redirigiendo al inicio…</div>
+      <div className="flex items-center justify-center">
+        <Card className="w-full max-w-xl">
+          <CardHeader>
+            <CardTitle>Procesando ingesta</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {status === "running" && (
+              <div className="flex flex-col items-center gap-3 text-center">
+                <Loader2 className="h-10 w-10 animate-spin" />
+                <p className="text-sm text-gray-600">
+                  Estamos volcando los productos a <code>inventory</code>…
+                </p>
               </div>
-            </div>
-          )}
+            )}
 
-          {status === "error" && (
-            <div className="flex flex-col items-center gap-4 text-center">
-              <AlertTriangle className="h-10 w-10 text-red-600" />
-              <div className="text-sm">
-                <div className="font-medium">No se pudo procesar la ingesta</div>
-                <div className="text-gray-600 mt-1">{message}</div>
+            {status === "success" && result && (
+              <div className="flex flex-col items-center gap-4 text-center">
+                <CheckCircle2 className="h-10 w-10 text-green-600" />
+                <div className="text-sm">
+                  <div className="font-medium">¡Ingesta completada con éxito!</div>
+                  <div className="text-gray-600 mt-1">{message}</div>
+                  <div className="text-gray-500 mt-2">Redirigiendo al inicio…</div>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <Button onClick={() => navigate("/ingest")} variant="outline">
-                  Volver a ingesta
-                </Button>
-                <Button onClick={() => navigate("/")} className="bg-blue-600 hover:bg-blue-700">
-                  Ir al inicio
-                </Button>
+            )}
+
+            {status === "error" && (
+              <div className="flex flex-col items-center gap-4 text-center">
+                <AlertTriangle className="h-10 w-10 text-red-600" />
+                <div className="text-sm">
+                  <div className="font-medium">No se pudo procesar la ingesta</div>
+                  <div className="text-gray-600 mt-1">{message}</div>
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={() => navigate("/ingest")} variant="outline">
+                    Volver a ingesta
+                  </Button>
+                  <Button onClick={() => navigate("/")} className="bg-blue-600 hover:bg-blue-700">
+                    Ir al inicio
+                  </Button>
+                </div>
               </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 };

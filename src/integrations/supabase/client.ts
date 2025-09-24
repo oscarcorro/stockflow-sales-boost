@@ -2,10 +2,27 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
-const SUPABASE_URL = "https://vrwiobkgtpbfuaglgzxu.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZyd2lvYmtndHBiZnVhZ2xnenh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAyNjU3MzgsImV4cCI6MjA2NTg0MTczOH0.9GUmrH2fQT2K4ejB3T0gTTeJnzLBQ6_qkEm4GnFNbKM";
+// Leemos las credenciales desde variables de entorno expuestas por Vite
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
-// Import the supabase client like this:
+// Guardas en tiempo de ejecución para evitar builds/arranques silenciosos sin claves
+if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
+  throw new Error(
+    '[Supabase] Falta VITE_SUPABASE_URL o VITE_SUPABASE_ANON_KEY. ' +
+    'Crea un .env.local y define ambas variables.'
+  );
+}
+
+// Importa el cliente así:
 // import { supabase } from "@/integrations/supabase/client";
-
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+  db: {
+    schema: 'public',
+  },
+});

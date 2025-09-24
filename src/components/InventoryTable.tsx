@@ -18,6 +18,7 @@ import DeleteProductModal from './DeleteProductModal';
 import MultiSizeFilter from './MultiSizeFilter';
 import MultiColorFilter from './MultiColorFilter';
 import { InventoryItem as UIInventoryItem } from '@/types/warehouse';
+import SupervisorGateButton from '@/components/security/SupervisorGateButton'; // ← NUEVO
 
 // Tipos base generados desde Supabase
 type InventoryRow = Database['public']['Tables']['inventory']['Row'];
@@ -159,11 +160,10 @@ const InventoryTable: React.FC = () => {
           size: (product.size ?? '—') as string,
           color: (product.color ?? '—') as string,
           quantity_sold: 1,
-          remaining_stock: newStockSala,               // útil para la UI
-          replenishment_generated: true,               // marcamos que genera reposición
-          sale_date: new Date().toISOString(),         // tu tabla lo tiene
+          remaining_stock: newStockSala,
+          replenishment_generated: true,
+          sale_date: new Date().toISOString(),
           created_at: new Date().toISOString(),
-          // point_of_sale_id: null,                   // opcional si algún día lo usas
         };
 
         const { error: saleErr } = await supabase.from('sales_history').insert(payload);
@@ -182,7 +182,6 @@ const InventoryTable: React.FC = () => {
           .maybeSingle();
 
         if (rqErr && rqErr.code !== 'PGRST116') {
-          // PGRST116 = No rows found for maybeSingle()
           console.error('[registerSale] Error select replenishment_queue:', rqErr);
           throw rqErr;
         }
@@ -229,7 +228,6 @@ const InventoryTable: React.FC = () => {
     onError: (err: unknown) => {
       console.error('Error registrando venta:', err);
 
-      // ✅ Sin `any`: discriminamos el tipo del error de forma segura
       let msg = 'Error al registrar la venta. Revisa la consola por si hay una política RLS bloqueando la operación.';
       if (err instanceof Error) {
         msg = err.message;
@@ -318,7 +316,7 @@ const InventoryTable: React.FC = () => {
     }
   };
 
-  // NUEVO: botón "Añadir inventario" (redirige al wizard de CSV)
+  // NUEVO: botón "Añadir inventario" (redirige al wizard de CSV) protegido por candado
   const handleAddInventory = () => {
     navigate('/ingest');
   };
@@ -435,15 +433,16 @@ const InventoryTable: React.FC = () => {
                   </DialogContent>
                 </Dialog>
 
-                {/* SUSTITUCIÓN: antes "Actualizar inventario" → ahora "Añadir inventario" */}
-                <Button
-                  onClick={handleAddInventory}
-                  variant="outline"
-                  className="flex items-center gap-2 hover:bg-blue-50 transition-colors"
+                {/* PROTEGIDO POR CANDADO DE SUPERVISOR */}
+                <SupervisorGateButton
+                  onUnlock={handleAddInventory}
+                  cacheMinutes={0} 
+                  variant="default"
+                  className="flex items-center gap-2 border border-input bg-green-600 hover:bg-green-700 transition-colors"
                 >
                   <Upload className="h-4 w-4" />
                   Añadir inventario
-                </Button>
+                </SupervisorGateButton>
               </div>
             </div>
 
