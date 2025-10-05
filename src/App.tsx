@@ -10,6 +10,8 @@ import {
 } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
 
+import "./lib/supabaseClient";
+
 import Dashboard from "./components/Dashboard";
 import InventoryPage from "./pages/InventoryPage";
 import StoreMapPage from "./pages/StoreMapPage";
@@ -20,9 +22,14 @@ import NotFound from "./pages/NotFound";
 import PageTransition from "./components/PageTransition";
 import { useRouteDirection } from "./hooks/useRouteDirection";
 
-// ⬇️ Páginas de ingesta
+// Ingesta
 import IngestionWizardPage from "./pages/IngestionWizardPage";
-import IngestionProcessingPage from "./pages/IngestionProcessingPage"; // NUEVO
+import IngestionProcessingPage from "./pages/IngestionProcessingPage";
+
+// 👉 Auth (nuevo)
+import { AuthProvider } from "@/lib/AuthProvide";
+import { RequireAuth } from "@/components/RequireAuth";
+import LoginPage from "@/pages/LoginPage";
 
 const queryClient = new QueryClient();
 
@@ -30,8 +37,8 @@ const pickVariant = (pathname: string, dir: "forward" | "back") => {
   const isDetail = /^\/product\/[^/]+$/.test(pathname);
   const isDashboard = pathname === "/dashboard" || pathname === "/";
   if (isDetail) return "detail" as const;
-  if (isDashboard) return "back" as const; // 👈 siempre “back” al dashboard
-  return dir; // 'forward' | 'back' según navegación real
+  if (isDashboard) return "back" as const;
+  return dir;
 };
 
 const AnimatedRoutes = () => {
@@ -109,7 +116,7 @@ const AnimatedRoutes = () => {
           }
         />
 
-        {/* Ingesta: pantalla de proceso y redirección */}
+        {/* Ingesta: proceso */}
         <Route
           path="/ingest/run/:runId"
           element={
@@ -137,10 +144,24 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <BrowserRouter>
-        {/* ⬇️ contenedor global que oculta overflow durante transiciones */}
-        <div className="h-screen w-screen overflow-hidden">
-          <AnimatedRoutes />
-        </div>
+        <AuthProvider>
+          <Routes>
+            {/* Pública */}
+            <Route path="/login" element={<LoginPage />} />
+
+            {/* Todo lo demás requiere sesión */}
+            <Route
+              path="/*"
+              element={
+                <RequireAuth>
+                  <div className="h-screen w-screen overflow-hidden">
+                    <AnimatedRoutes />
+                  </div>
+                </RequireAuth>
+              }
+            />
+          </Routes>
+        </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

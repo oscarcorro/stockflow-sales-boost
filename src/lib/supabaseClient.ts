@@ -1,7 +1,18 @@
 // src/lib/supabaseClient.ts
-import { createClient } from "@supabase/supabase-js";
+// Reexporta el cliente singleton para evitar múltiples instancias.
+// No crear un createClient aquí.
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+import { supabase } from '@/integrations/supabase/client';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export { supabase };
+export default supabase;
+
+// (Opcional) Exponer en window para pruebas en consola
+declare global {
+  interface Window {
+    supabase: typeof supabase;
+  }
+}
+if (typeof window !== 'undefined') {
+  window.supabase = supabase;
+}

@@ -6,35 +6,34 @@ import ProductDetailModal from './ProductDetailModal';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import type { Tables } from '@/integrations/supabase/types';
+import LogoutButton from '@/components/LogOutButton';
 
-type InventoryRow = {
-  id: string;
-  name: string;
-  size: string | null;
-  color: string | null;
-  image_url: string | null;
-  ubicacion_almacen: string | null;
-  stock_sala: number | null;
-  stock_almacen: number | null;
-  price: number | null;
+// Tipos basados en tus types generados (no inventamos columnas)
+type InventoryRowDB = Pick<
+  Tables<'inventory'>,
+  'id' | 'name' | 'size' | 'color' | 'stock_sala' | 'stock_almacen' | 'ubicacion_almacen'
+>;
+
+// Tipo para la UI, con 'location' derivado
+type InventoryRow = InventoryRowDB & {
+  location: string | null;
 };
 
-type QueueRow = {
-  inventory_id: string;
-  quantity_needed: number;
-  priority: 'normal' | 'urgent' | null;
-};
+type QueueRow = Pick<Tables<'replenishment_queue'>, 'id' | 'inventory_id' | 'quantity_needed' | 'priority'>;
+
+type Priority = 'normal' | 'urgent';
 
 type PendingProduct = {
   id: string;
   name: string;
   size: string;
   color?: string;
-  imageUrl: string;
+  imageUrl: string;      // derivado (placeholder)
   location: string;
-  price?: number | null;
-  priority: 'normal' | 'urgent';
-  quantityNeeded: number;         // 👈 NUEVO
+  price?: number | null; // derivado (placeholder)
+  priority: Priority;
+  quantityNeeded: number;
 };
 
 const Spinner: React.FC = () => (
@@ -45,43 +44,32 @@ const Spinner: React.FC = () => (
       fill="none"
       viewBox="0 0 24 24"
     >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-      />
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
     </svg>
     <span className="text-sm text-gray-500">Cargando productos…</span>
     <span className="sr-only">Cargando</span>
   </div>
 );
 
-const Dashboard = () => {
-  const [lastReplenishmentMinutes, setLastReplenishmentMinutes] = useState(22);
-  const [selectedProduct, setSelectedProduct] = useState<any>(null);
-  const [isProductModalOpen, setIsProductModalOpen] = useState(false);
+const Dashboard: React.FC = () => {
+  const [lastReplenishmentMinutes, setLastReplenishmentMinutes] = useState<number>(22);
+  const [selectedProduct, setSelectedProduct] = useState<PendingProduct | null>(null);
+  const [isProductModalOpen, setIsProductModalOpen] = useState<boolean>(false);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  // 🔹 Traemos la cola de reposición > 0
+  // Cola de reposición > 0
   const {
     data: queueRows = [],
     isLoading,
     error,
   } = useQuery({
     queryKey: ['inventory-pendings'],
-    queryFn: async () => {
+    queryFn: async (): Promise<QueueRow[]> => {
       const { data, error } = await supabase
         .from('replenishment_queue')
-        .select('inventory_id, quantity_needed, priority')
+        .select('id, inventory_id, quantity_needed, priority')
         .gt('quantity_needed', 0)
         .order('inventory_id');
 
@@ -90,48 +78,60 @@ const Dashboard = () => {
     },
   });
 
-  // 🔹 Con los IDs de la cola, traemos sus productos del inventario
+  // Inventario para esos IDs (filtrando soft-deleted)
   const { data: inventoryMap } = useQuery({
     queryKey: ['inventory-for-pendings', queueRows.map((r) => r.inventory_id)],
     enabled: queueRows.length > 0,
     queryFn: async () => {
       const ids = Array.from(new Set(queueRows.map((r) => r.inventory_id)));
+      if (ids.length === 0) return new Map<string, InventoryRow>();
+
       const { data, error } = await supabase
         .from('inventory')
-        .select(
-          'id, name, size, color, image_url, ubicacion_almacen, stock_sala, stock_almacen, price'
-        )
+        .select('id, name, size, color, stock_sala, stock_almacen, ubicacion_almacen')
+        .is('deleted_at', null)
         .in('id', ids);
 
       if (error) throw error;
+
       const map = new Map<string, InventoryRow>();
-      (data ?? []).forEach((row) => map.set(row.id, row as InventoryRow));
+      (data ?? []).forEach((row) => {
+        const d = row as InventoryRowDB;
+        const r: InventoryRow = {
+          ...d,
+          location: d.ubicacion_almacen ?? null,
+        };
+        map.set(r.id, r);
+      });
       return map;
     },
   });
 
-  // 🔹 Mapeamos a lo que espera la UI + quantityNeeded
+  // Adaptar al tipo que espera la UI
   const mappedProducts: PendingProduct[] = (queueRows ?? [])
     .map((q) => {
       const r = inventoryMap?.get(q.inventory_id);
       if (!r) return null;
+
+      const prio = (q.priority === 'urgent' ? 'urgent' : 'normal') as Priority;
+
       return {
         id: r.id,
         name: r.name,
         size: r.size ?? '—',
         color: r.color ?? '—',
-        imageUrl: r.image_url ?? '',
-        location: r.ubicacion_almacen ?? '—',
-        price: r.price ?? null,
-        priority: (q.priority as any) === 'urgent' ? 'urgent' : 'normal',
+        imageUrl: '',
+        location: r.location ?? '—',
+        price: null,
+        priority: prio,
         quantityNeeded: q.quantity_needed,
       } as PendingProduct;
     })
-    .filter(Boolean) as PendingProduct[];
+    .filter((x): x is PendingProduct => Boolean(x));
 
-  // 🔹 Ordenamos por ubicación
+  // Orden por ubicación P-L-E (p.ej. P2-L-E6-A1)
   const sortedProducts = [...mappedProducts].sort((a, b) => {
-    const parse = (loc: string | null) => {
+    const parse = (loc: string | null | undefined) => {
       if (!loc) return { p: 999, lado: 99, e: 'ZZZ' };
       const [pasillo, lado, estante] = (loc || '').split('-');
       const p = Number.parseInt((pasillo || '').replace('P', '')) || 999;
@@ -145,16 +145,16 @@ const Dashboard = () => {
     return A.e.localeCompare(B.e);
   });
 
-  // ⏱️ Simular actualización del tiempo de última reposición
+  // Simular contador de última reposición
   useEffect(() => {
     const interval = setInterval(() => setLastReplenishmentMinutes((prev) => prev + 1), 60000);
     return () => clearInterval(interval);
   }, []);
 
-  // ✅ Reposición: decrementa cola y mueve stock (almacén->sala)
+  // Marcar como repuesto: mueve 1 unidad de almacén a sala y baja la cola
   const handleMarkAsRestocked = async (productId: string) => {
     try {
-      // 1) Lee inventario actual
+      // 1) Inventario actual
       const { data: inv, error: invErr } = await supabase
         .from('inventory')
         .select('stock_sala, stock_almacen')
@@ -165,18 +165,17 @@ const Dashboard = () => {
       const sala = Number(inv?.stock_sala ?? 0);
       const almacen = Number(inv?.stock_almacen ?? 0);
       if (almacen <= 0) {
-        // No podemos reponer si no hay stock en almacén
-        return;
+        return; // Sin stock en almacén, no se puede reponer
       }
 
-      // 2) Mueve stock
+      // 2) Mover stock (almacén -> sala)
       const { error: updInvErr } = await supabase
         .from('inventory')
         .update({ stock_sala: sala + 1, stock_almacen: Math.max(almacen - 1, 0) })
         .eq('id', productId);
       if (updInvErr) throw updInvErr;
 
-      // 3) Decrementa quantity_needed en la cola
+      // 3) Bajar 1 la cola
       const { data: rqRow, error: rqSelErr } = await supabase
         .from('replenishment_queue')
         .select('id, quantity_needed')
@@ -184,18 +183,14 @@ const Dashboard = () => {
         .single();
 
       if (!rqSelErr && rqRow) {
-        const nextQty = Math.max((rqRow as any).quantity_needed - 1, 0);
-        if (nextQty > 0) {
-          await supabase
-            .from('replenishment_queue')
-            .update({ quantity_needed: nextQty })
-            .eq('id', (rqRow as any).id);
-        } else {
-          await supabase.from('replenishment_queue').delete().eq('id', (rqRow as any).id);
-        }
+        const nextQty = Math.max(Number(rqRow.quantity_needed ?? 0) - 1, 0);
+        await supabase
+          .from('replenishment_queue')
+          .update({ quantity_needed: nextQty, updated_at: new Date().toISOString() })
+          .eq('id', rqRow.id);
       }
 
-      // 4) Refrescos
+      // 4) Refrescar queries
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['inventory-pendings'] }),
         queryClient.invalidateQueries({ queryKey: ['inventory-for-pendings'] }),
@@ -208,7 +203,9 @@ const Dashboard = () => {
   };
 
   const handleProductClick = (product: PendingProduct) => {
-    navigate(`/product/${product.id}`, { state: { product } });
+    setSelectedProduct(product);
+    setIsProductModalOpen(true);
+    // navigate(`/product/${product.id}`, { state: { product } });
   };
 
   if (isLoading) {
@@ -226,15 +223,16 @@ const Dashboard = () => {
   return (
     <div className="h-screen bg-gray-50 overflow-hidden">
       <div className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-6">
+        {/* IZQUIERDA: botón salir + logo + título */}
         <div className="flex items-center gap-4">
+          <LogoutButton />
           <div className="w-8 h-8 bg-gray-100 rounded border border-gray-200 flex items-center justify-center flex-shrink-0">
             <span className="text-xs font-bold text-gray-600">A</span>
           </div>
-          <div className="text-lg font-semibold text-gray-900">
-            Asics Tienda Madrid Centro
-          </div>
+          <div className="text-lg font-semibold text-gray-900">Asics Tienda Madrid Centro</div>
         </div>
 
+        {/* DERECHA: navegación */}
         <nav className="flex items-center gap-8">
           <button
             onClick={() => navigate('/map')}

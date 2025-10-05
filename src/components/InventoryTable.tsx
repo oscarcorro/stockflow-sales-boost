@@ -3,10 +3,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Search, Filter, Edit, House, Trash2, ShoppingCart, Plus, Upload } from 'lucide-react';
+import { Search, Filter, Edit, House, Trash2, ShoppingCart, Plus, Upload, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -14,21 +14,23 @@ import { supabase } from '@/integrations/supabase/client';
 import type { Database } from '@/integrations/supabase/types';
 import AddProductModal from './AddProductModal';
 import EditProductModal from './EditProductModal';
-import DeleteProductModal from './DeleteProductModal';
 import MultiSizeFilter from './MultiSizeFilter';
 import MultiColorFilter from './MultiColorFilter';
 import { InventoryItem as UIInventoryItem } from '@/types/warehouse';
-import SupervisorGateButton from '@/components/security/SupervisorGateButton'; // ← NUEVO
+import SupervisorGateButton from '@/components/security/SupervisorGateButton';
 
 // Tipos base generados desde Supabase
 type InventoryRow = Database['public']['Tables']['inventory']['Row'];
+type InventoryUpdate = Database['public']['Tables']['inventory']['Update'];
 type SalesInsert = Database['public']['Tables']['sales_history']['Insert'];
 
 // Extendemos con campos “legacy” opcionales usados en UI
 type InventoryRowLegacy = InventoryRow & {
-  ubicacion_almacen?: string | null; // no existe en schema actual
-  image_url?: string | null;         // si lo tuvieras
-  price?: number | null;             // si lo tuvieras
+  location?: string | null;
+  zone?: string | null;
+  ubicacion_almacen?: string | null;
+  image_url?: string | null;
+  price?: number | null;
 };
 
 type EditModalItem = {
@@ -50,11 +52,8 @@ type EditModalItem = {
 
 const toUIItem = (raw0: InventoryRow): UIInventoryItem => {
   const raw = raw0 as InventoryRowLegacy;
-
   const sala = Number(raw.stock_sala ?? 0);
   const almacen = Number(raw.stock_almacen ?? 0);
-
-  // Tu schema solo tiene `location`, no `ubicacion_almacen`
   const ubic = (raw.ubicacion_almacen ?? raw.location ?? null) as string | null;
 
   return {
@@ -66,9 +65,9 @@ const toUIItem = (raw0: InventoryRow): UIInventoryItem => {
     gender: (raw.gender ?? null) as UIInventoryItem['gender'],
     stock_sala: sala,
     stock_almacen: almacen,
-    ubicacion_almacen: ubic,      // null en tu schema actual
+    ubicacion_almacen: ubic,
     location: (raw.location ?? ubic) ?? null,
-    zone: raw.zone ?? null,       // string libre en tu schema
+    zone: raw.zone ?? null,
     image_url: raw.image_url ?? null,
     price: raw.price ?? null,
     quantity: sala + almacen,
@@ -76,8 +75,7 @@ const toUIItem = (raw0: InventoryRow): UIInventoryItem => {
 };
 
 const toEditModalItem = (it: UIInventoryItem): EditModalItem => {
-  const zone: 'sala' | 'almacen' =
-    it.zone === 'sala' || it.zone === 'almacen' ? it.zone : 'almacen';
+  const zone: 'sala' | 'almacen' = it.zone === 'sala' || it.zone === 'almacen' ? it.zone : 'almacen';
 
   return {
     id: it.id,
@@ -105,18 +103,29 @@ const InventoryTable: React.FC = () => {
   const [lowStockFilter, setLowStockFilter] = useState(false);
   const [editingProduct, setEditingProduct] = useState<EditModalItem | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [deleteProduct, setDeleteProduct] = useState<UIInventoryItem | null>(null);
-  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+
+  // estado para el toast de confirmación
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<UIInventoryItem | null>(null);
+
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  // Carga inventario
+  // Carga inventario (solo items no borrados)
   const { data: inventoryData = [], isLoading, error } = useQuery<UIInventoryItem[]>({
     queryKey: ['inventory'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('inventory').select('*').order('name');
-      if (error) throw error;
+      const { data, error } = await supabase
+        .from('inventory')
+        .select('*')
+        .is('deleted_at', null)
+        .order('name');
+
+      if (error) {
+        console.error('[inventory] error:', error);
+        throw error;
+      }
       return (data ?? []).map(toUIItem);
     },
   });
@@ -127,7 +136,18 @@ const InventoryTable: React.FC = () => {
     0
   );
 
-  // 🛒 Registrar venta (corregido para tu schema)
+  // Handler "añadir producto" (cierra modal + refresca)
+  const handleAddProduct = () => {
+    queryClient.invalidateQueries({ queryKey: ['inventory'] });
+    setIsAddModalOpen(false);
+    toast({
+      title: 'Producto añadido',
+      description: 'El nuevo producto se ha añadido correctamente',
+      duration: 2000,
+    });
+  };
+
+  // 🛒 Registrar venta
   const registerSaleMutation = useMutation({
     mutationFn: async (productId: string) => {
       const product = inventoryData.find((p) => p.id === productId);
@@ -152,7 +172,7 @@ const InventoryTable: React.FC = () => {
         }
       }
 
-      // 2) Inserta en historial de ventas (SIN inventory_id)
+      // 2) Inserta en historial de ventas
       {
         const payload: SalesInsert = {
           product_name: product.name ?? 'Producto',
@@ -212,7 +232,6 @@ const InventoryTable: React.FC = () => {
       return { productName: product.name };
     },
     onSuccess: (data) => {
-      // Refrescos
       queryClient.invalidateQueries({ queryKey: ['inventory'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-pendings'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-for-pendings'] });
@@ -246,81 +265,52 @@ const InventoryTable: React.FC = () => {
     },
   });
 
-  // Filtros
-  const filteredData = inventoryData.filter((item) => {
-    const needle = searchTerm.toLowerCase();
-    const matchesSearch =
-      (item.name ?? '').toLowerCase().includes(needle) ||
-      (item.sku ?? '').toLowerCase().includes(needle) ||
-      (item.size ?? '').toString().toLowerCase().includes(needle);
-
-    const matchesSize = selectedSizes.length === 0 || selectedSizes.includes(item.size ?? '');
-    const matchesColor = selectedColors.length === 0 || selectedColors.includes(item.color ?? '');
-    const matchesGender = genderFilter === 'all' || (item.gender ?? '') === genderFilter;
-
-    const totalStock = (item.stock_sala ?? 0) + (item.stock_almacen ?? 0);
-    const matchesLowStock = !lowStockFilter || totalStock < 10;
-
-    return matchesSearch && matchesSize && matchesColor && matchesGender && matchesLowStock;
-  });
-
-  const uniqueSizes = [...new Set(inventoryData.map((i) => i.size ?? '').filter(Boolean))];
-  const uniqueColors = [...new Set(inventoryData.map((i) => i.color ?? '').filter(Boolean))];
-  const uniqueGenders = [...new Set(inventoryData.map((i) => i.gender ?? '').filter(Boolean))];
-
-  const handleUpdateProduct = (_updatedProduct: EditModalItem) => {
-    queryClient.invalidateQueries({ queryKey: ['inventory'] });
-    toast({
-      title: 'Producto actualizado',
-      description: 'Los cambios se han guardado correctamente',
-      duration: 2000,
-    });
+  // Lanzar toast de confirmación
+  const requestDelete = (item: UIInventoryItem) => {
+    setPendingDelete(item);
+    setConfirmOpen(true);
   };
 
-  const handleAddProduct = () => {
-    queryClient.invalidateQueries({ queryKey: ['inventory'] });
-    setIsAddModalOpen(false);
-    toast({
-      title: 'Producto añadido',
-      description: 'El nuevo producto se ha añadido correctamente',
-      duration: 2000,
-    });
-  };
-
-  const handleDeleteProduct = (product: UIInventoryItem) => {
-    setDeleteProduct(product);
-    setIsDeleteModalOpen(true);
-  };
-
-  const confirmDeleteProduct = async () => {
-    if (!deleteProduct) return;
+  // Soft delete (sin confirm nativa; lo ejecuta el toast)
+  const performDelete = async (item: UIInventoryItem) => {
     try {
-      const { error } = await supabase.from('inventory').delete().eq('id', deleteProduct.id);
-      if (error) throw error;
+      const payload: InventoryUpdate = { deleted_at: new Date().toISOString() };
+      const { error: updErr } = await supabase.from('inventory').update(payload).eq('id', item.id);
+      if (updErr) throw updErr;
 
-      queryClient.invalidateQueries({ queryKey: ['inventory'] });
+      // Optimista: quitar de la caché al instante
+      queryClient.setQueryData<UIInventoryItem[]>(['inventory'], (prev) =>
+        (prev ?? []).filter((p) => p.id !== item.id)
+      );
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['inventory'] }),
+        queryClient.invalidateQueries({ queryKey: ['inventory-pendings'] }),
+        queryClient.invalidateQueries({ queryKey: ['inventory-for-pendings'] }),
+        queryClient.invalidateQueries({ queryKey: ['replenishment-queue'] }),
+      ]);
+
       toast({
         title: 'Producto eliminado',
-        description: `"${deleteProduct.name}" ha sido eliminado del inventario`,
+        description: `"${item.name}" ha sido eliminado del inventario`,
         duration: 2000,
       });
-      setDeleteProduct(null);
-      setIsDeleteModalOpen(false);
-    } catch {
+    } catch (e) {
+      console.error('[soft-delete] error:', e);
       toast({
         title: 'Error al eliminar producto',
         description: 'No se pudo eliminar el producto',
         variant: 'destructive',
         duration: 2000,
       });
+    } finally {
+      setConfirmOpen(false);
+      setPendingDelete(null);
     }
   };
 
-  // NUEVO: botón "Añadir inventario" (redirige al wizard de CSV) protegido por candado
-  const handleAddInventory = () => {
-    navigate('/ingest');
-  };
-
+  // Navegación y utilidades
+  const handleAddInventory = () => navigate('/ingest');
   const handleBackToDashboard = () => navigate('/');
 
   const clearAllFilters = () => {
@@ -350,6 +340,27 @@ const InventoryTable: React.FC = () => {
       },
     });
   };
+
+  const filteredData = inventoryData.filter((item) => {
+    const needle = searchTerm.toLowerCase();
+    const matchesSearch =
+      (item.name ?? '').toLowerCase().includes(needle) ||
+      (item.sku ?? '').toLowerCase().includes(needle) ||
+      (item.size ?? '').toString().toLowerCase().includes(needle);
+
+    const matchesSize = selectedSizes.length === 0 || selectedSizes.includes(item.size ?? '');
+    const matchesColor = selectedColors.length === 0 || selectedColors.includes(item.color ?? '');
+    const matchesGender = genderFilter === 'all' || (item.gender ?? '') === genderFilter;
+
+    const totalStock = (item.stock_sala ?? 0) + (item.stock_almacen ?? 0);
+    const matchesLowStock = !lowStockFilter || totalStock < 10;
+
+    return matchesSearch && matchesSize && matchesColor && matchesGender && matchesLowStock;
+  });
+
+  const uniqueSizes = [...new Set(inventoryData.map((i) => i.size ?? '').filter(Boolean))];
+  const uniqueColors = [...new Set(inventoryData.map((i) => i.color ?? '').filter(Boolean))];
+  const uniqueGenders = [...new Set(inventoryData.map((i) => i.gender ?? '').filter(Boolean))];
 
   const hasActiveFilters =
     !!searchTerm ||
@@ -428,6 +439,9 @@ const InventoryTable: React.FC = () => {
                   <DialogContent className="max-w-2xl">
                     <DialogHeader>
                       <DialogTitle>Añadir nuevo producto</DialogTitle>
+                      <DialogDescription className="sr-only">
+                        Formulario para añadir un nuevo producto al inventario.
+                      </DialogDescription>
                     </DialogHeader>
                     <AddProductModal onAdd={handleAddProduct} />
                   </DialogContent>
@@ -436,7 +450,7 @@ const InventoryTable: React.FC = () => {
                 {/* PROTEGIDO POR CANDADO DE SUPERVISOR */}
                 <SupervisorGateButton
                   onUnlock={handleAddInventory}
-                  cacheMinutes={0} 
+                  cacheMinutes={0}
                   variant="default"
                   className="flex items-center gap-2 border border-input bg-green-600 hover:bg-green-700 transition-colors"
                 >
@@ -538,15 +552,29 @@ const InventoryTable: React.FC = () => {
                       <div className="text-sm text-gray-600">{item.size}</div>
                       <div className="text-sm text-gray-600">{item.color}</div>
                       <div className="text-sm text-gray-600">{item.gender || '-'}</div>
-                      <div className={`text-sm ${(item.stock_sala ?? 0) === 0 ? 'text-red-600 font-bold' : (item.stock_sala ?? 0) < 5 ? 'text-orange-600 font-semibold' : 'text-gray-900'}`}>
+                      <div
+                        className={`text-sm ${
+                          (item.stock_sala ?? 0) === 0
+                            ? 'text-red-600 font-bold'
+                            : (item.stock_sala ?? 0) < 5
+                            ? 'text-orange-600 font-semibold'
+                            : 'text-gray-900'
+                        }`}
+                      >
                         {item.stock_sala ?? 0}
                       </div>
-                      <div className={`text-sm ${(item.stock_almacen ?? 0) === 0 ? 'text-red-600 font-bold' : (item.stock_almacen ?? 0) < 5 ? 'text-orange-600 font-semibold' : 'text-gray-900'}`}>
+                      <div
+                        className={`text-sm ${
+                          (item.stock_almacen ?? 0) === 0
+                            ? 'text-red-600 font-bold'
+                            : (item.stock_almacen ?? 0) < 5
+                            ? 'text-orange-600 font-semibold'
+                            : 'text-gray-900'
+                        }`}
+                      >
                         {item.stock_almacen ?? 0}
                       </div>
-                      <div className="text-sm text-gray-600">
-                        {item.location ?? '—'}
-                      </div>
+                      <div className="text-sm text-gray-600">{item.location ?? '—'}</div>
                       <div className="flex items-center justify-center gap-2">
                         <TooltipProvider>
                           <Tooltip>
@@ -561,7 +589,9 @@ const InventoryTable: React.FC = () => {
                                 <ShoppingCart className="h-4 w-4 text-green-600" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent><p>Registrar venta</p></TooltipContent>
+                            <TooltipContent>
+                              <p>Registrar venta</p>
+                            </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
 
@@ -577,7 +607,9 @@ const InventoryTable: React.FC = () => {
                                 <Edit className="h-4 w-4 text-blue-600" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent><p>Editar producto</p></TooltipContent>
+                            <TooltipContent>
+                              <p>Editar producto</p>
+                            </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
 
@@ -587,13 +619,15 @@ const InventoryTable: React.FC = () => {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                onClick={() => setDeleteProduct(item)}
+                                onClick={() => requestDelete(item)} // ← abre toast de confirmación
                                 className="h-8 w-8 p-0 hover:bg-red-100 transition-colors"
                               >
                                 <Trash2 className="h-4 w-4 text-red-600" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent><p>Eliminar producto</p></TooltipContent>
+                            <TooltipContent>
+                              <p>Eliminar producto</p>
+                            </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                       </div>
@@ -609,20 +643,81 @@ const InventoryTable: React.FC = () => {
       {editingProduct && (
         <EditProductModal
           product={editingProduct}
-          onUpdate={handleUpdateProduct}
+          onUpdate={() => {
+            queryClient.invalidateQueries({ queryKey: ['inventory'] });
+            toast({
+              title: 'Producto actualizado',
+              description: 'Los cambios se han guardado correctamente',
+              duration: 2000,
+            });
+            setEditingProduct(null);
+          }}
           onClose={() => setEditingProduct(null)}
         />
       )}
 
-      <DeleteProductModal
-        isOpen={isDeleteModalOpen}
-        onClose={() => {
-          setIsDeleteModalOpen(false);
-          setDeleteProduct(null);
-        }}
-        onConfirm={confirmDeleteProduct}
-        productName={deleteProduct?.name || ''}
-      />
+      {/* CONFIRMACIÓN centrada con animación */}
+      {confirmOpen && pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          {/* overlay */}
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-[2px] animate-in fade-in duration-150"
+            onClick={() => {
+              setConfirmOpen(false);
+              setPendingDelete(null);
+            }}
+            aria-hidden="true"
+          />
+          {/* card */}
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="del-title"
+            aria-describedby="del-desc"
+            className="relative w-[440px] max-w-[92vw] rounded-2xl border bg-white shadow-2xl p-5
+                      animate-in fade-in zoom-in-95 slide-in-from-top-2 duration-200"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setConfirmOpen(false);
+                setPendingDelete(null);
+              }
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-red-600 mt-0.5" />
+              <div className="flex-1">
+                <div id="del-title" className="font-semibold text-gray-900">
+                  Eliminar producto
+                </div>
+                <div id="del-desc" className="text-sm text-gray-600 mt-1">
+                  ¿Seguro que quieres eliminar <span className="font-medium">“{pendingDelete.name}”</span>?
+                </div>
+
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setConfirmOpen(false);
+                      setPendingDelete(null);
+                    }}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    autoFocus
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => performDelete(pendingDelete)}
+                  >
+                    Eliminar
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

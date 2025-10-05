@@ -1,6 +1,9 @@
 -- StockFlow - Ingesta flexible (campos extra) + staging + barcodes
 -- Fecha: 2025-09-02
 
+-- Subes un CSV → se guardan sus filas en “staging” → pulsas “procesar” 
+-- → cada fila se vuelca al inventario con lógica de alta/actualización.
+
 -- Extensiones necesarias
 create extension if not exists "pgcrypto";
 create extension if not exists "uuid-ossp";
@@ -111,6 +114,9 @@ declare
   v_existing_id uuid;
   v_action text;
 begin
+  -- Seguridad: fijar schema
+  perform set_config('search_path', 'public', true);
+
   -- 1) localizar producto existente por SKU o BARCODE
   if v_sku is not null then
     select id into v_existing_id from public.inventory where sku = v_sku limit 1;
@@ -181,3 +187,70 @@ drop trigger if exists trg_ingestion_items_hash on public.ingestion_items;
 create trigger trg_ingestion_items_hash
 before insert on public.ingestion_items
 for each row execute procedure public._ingestion_items_fill_hash();
+
+-- Procesa un run de ingesta: vuelca items a inventory usando upsert_inventory_item
+create or replace function public.process_ingestion_run(p_run_id uuid, p_tenant_id uuid)
+returns table(processed int, succeeded int, failed int)
+language plpgsql
+security definer
+as $$
+declare
+  r record;
+  v_processed int := 0;
+  v_ok int := 0;
+  v_fail int := 0;
+  v_total int := 0;
+  v_norm jsonb;
+begin
+  -- Seguridad: fijar schema
+  perform set_config('search_path', 'public', true);
+
+  -- Marcar el run como "processing"
+  update public.ingestion_runs
+    set status = 'processing', processed_rows = 0, error_rows = 0, finished_at = null
+    where id = p_run_id;
+
+  -- Total de filas
+  select count(*) into v_total from public.ingestion_items where run_id = p_run_id;
+
+  for r in
+    select id, coalesce(normalized, raw) as payload
+    from public.ingestion_items
+    where run_id = p_run_id
+    order by created_at asc
+  loop
+    begin
+      v_norm := r.payload;
+
+      -- Llamar a la RPC de upsert
+      perform (public.upsert_inventory_item(p_tenant_id, v_norm));
+
+      -- Item OK
+      update public.ingestion_items
+        set status = 'upserted', error_text = null
+        where id = r.id;
+
+      v_ok := v_ok + 1;
+    exception when others then
+      -- Item con error
+      update public.ingestion_items
+        set status = 'error', error_text = sqlerrm
+        where id = r.id;
+      v_fail := v_fail + 1;
+    end;
+
+    v_processed := v_processed + 1;
+  end loop;
+
+  -- Marcar el run como done/error y counters
+  update public.ingestion_runs
+    set status = case when v_fail > 0 then 'error' else 'done' end,
+        total_rows = v_total,
+        processed_rows = v_ok,
+        error_rows = v_fail,
+        finished_at = now()
+    where id = p_run_id;
+
+  return query select v_processed, v_ok, v_fail;
+end;
+$$;
