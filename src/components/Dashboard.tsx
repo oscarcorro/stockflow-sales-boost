@@ -2,48 +2,38 @@ import React, { useState, useEffect } from 'react';
 import PendingProductsList from './PendingProductsList';
 import WarehouseKPIs from './WarehouseKPIs';
 import WarehouseSummary from './WarehouseSummary';
-import ProductDetailModal from './ProductDetailModal';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import type { Tables } from '@/integrations/supabase/types';
 import LogoutButton from '@/components/LogOutButton';
 
-// Tipos basados en tus types generados (no inventamos columnas)
+// Tipos DB reales
 type InventoryRowDB = Pick<
   Tables<'inventory'>,
   'id' | 'name' | 'size' | 'color' | 'stock_sala' | 'stock_almacen' | 'ubicacion_almacen'
 >;
-
-// Tipo para la UI, con 'location' derivado
-type InventoryRow = InventoryRowDB & {
-  location: string | null;
-};
-
 type QueueRow = Pick<Tables<'replenishment_queue'>, 'id' | 'inventory_id' | 'quantity_needed' | 'priority'>;
 
 type Priority = 'normal' | 'urgent';
 
-type PendingProduct = {
+type InventoryRow = InventoryRowDB & { location: string | null };
+
+export type PendingProduct = {
   id: string;
   name: string;
   size: string;
   color?: string;
-  imageUrl: string;      // derivado (placeholder)
+  imageUrl: string;
   location: string;
-  price?: number | null; // derivado (placeholder)
+  price?: number | null;
   priority: Priority;
   quantityNeeded: number;
 };
 
 const Spinner: React.FC = () => (
   <div role="status" aria-live="polite" className="flex flex-col items-center gap-3">
-    <svg
-      className="h-10 w-10 animate-spin text-blue-600"
-      xmlns="http://www.w3.org/2000/svg"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
+    <svg className="h-10 w-10 animate-spin text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
     </svg>
@@ -54,17 +44,11 @@ const Spinner: React.FC = () => (
 
 const Dashboard: React.FC = () => {
   const [lastReplenishmentMinutes, setLastReplenishmentMinutes] = useState<number>(22);
-  const [selectedProduct, setSelectedProduct] = useState<PendingProduct | null>(null);
-  const [isProductModalOpen, setIsProductModalOpen] = useState<boolean>(false);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   // Cola de reposición > 0
-  const {
-    data: queueRows = [],
-    isLoading,
-    error,
-  } = useQuery({
+  const { data: queueRows = [], isLoading, error } = useQuery({
     queryKey: ['inventory-pendings'],
     queryFn: async (): Promise<QueueRow[]> => {
       const { data, error } = await supabase
@@ -97,10 +81,7 @@ const Dashboard: React.FC = () => {
       const map = new Map<string, InventoryRow>();
       (data ?? []).forEach((row) => {
         const d = row as InventoryRowDB;
-        const r: InventoryRow = {
-          ...d,
-          location: d.ubicacion_almacen ?? null,
-        };
+        const r: InventoryRow = { ...d, location: d.ubicacion_almacen ?? null };
         map.set(r.id, r);
       });
       return map;
@@ -114,7 +95,6 @@ const Dashboard: React.FC = () => {
       if (!r) return null;
 
       const prio = (q.priority === 'urgent' ? 'urgent' : 'normal') as Priority;
-
       return {
         id: r.id,
         name: r.name,
@@ -151,61 +131,9 @@ const Dashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Marcar como repuesto: mueve 1 unidad de almacén a sala y baja la cola
-  const handleMarkAsRestocked = async (productId: string) => {
-    try {
-      // 1) Inventario actual
-      const { data: inv, error: invErr } = await supabase
-        .from('inventory')
-        .select('stock_sala, stock_almacen')
-        .eq('id', productId)
-        .single();
-      if (invErr) throw invErr;
-
-      const sala = Number(inv?.stock_sala ?? 0);
-      const almacen = Number(inv?.stock_almacen ?? 0);
-      if (almacen <= 0) {
-        return; // Sin stock en almacén, no se puede reponer
-      }
-
-      // 2) Mover stock (almacén -> sala)
-      const { error: updInvErr } = await supabase
-        .from('inventory')
-        .update({ stock_sala: sala + 1, stock_almacen: Math.max(almacen - 1, 0) })
-        .eq('id', productId);
-      if (updInvErr) throw updInvErr;
-
-      // 3) Bajar 1 la cola
-      const { data: rqRow, error: rqSelErr } = await supabase
-        .from('replenishment_queue')
-        .select('id, quantity_needed')
-        .eq('inventory_id', productId)
-        .single();
-
-      if (!rqSelErr && rqRow) {
-        const nextQty = Math.max(Number(rqRow.quantity_needed ?? 0) - 1, 0);
-        await supabase
-          .from('replenishment_queue')
-          .update({ quantity_needed: nextQty, updated_at: new Date().toISOString() })
-          .eq('id', rqRow.id);
-      }
-
-      // 4) Refrescar queries
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['inventory-pendings'] }),
-        queryClient.invalidateQueries({ queryKey: ['inventory-for-pendings'] }),
-        queryClient.invalidateQueries({ queryKey: ['inventory'] }),
-      ]);
-      setLastReplenishmentMinutes(0);
-    } catch (e) {
-      console.error('Error al marcar como repuesto:', e);
-    }
-  };
-
+  // Click en producto → navegar a /product/:id (con state opcional)
   const handleProductClick = (product: PendingProduct) => {
-    setSelectedProduct(product);
-    setIsProductModalOpen(true);
-    // navigate(`/product/${product.id}`, { state: { product } });
+    navigate(`/product/${product.id}`, { state: { product } });
   };
 
   if (isLoading) {
@@ -223,7 +151,6 @@ const Dashboard: React.FC = () => {
   return (
     <div className="h-screen bg-gray-50 overflow-hidden">
       <div className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-6">
-        {/* IZQUIERDA: botón salir + logo + título */}
         <div className="flex items-center gap-4">
           <LogoutButton />
           <div className="w-8 h-8 bg-gray-100 rounded border border-gray-200 flex items-center justify-center flex-shrink-0">
@@ -232,24 +159,14 @@ const Dashboard: React.FC = () => {
           <div className="text-lg font-semibold text-gray-900">Asics Tienda Madrid Centro</div>
         </div>
 
-        {/* DERECHA: navegación */}
         <nav className="flex items-center gap-8">
-          <button
-            onClick={() => navigate('/map')}
-            className="text-base text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-3 py-2 rounded transition-colors focus:outline-none"
-          >
+          <button onClick={() => navigate('/map')} className="text-base text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-3 py-2 rounded transition-colors focus:outline-none">
             Mapa
           </button>
-          <button
-            onClick={() => navigate('/inventory')}
-            className="text-base text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-3 py-2 rounded transition-colors focus:outline-none"
-          >
+          <button onClick={() => navigate('/inventory')} className="text-base text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-3 py-2 rounded transition-colors focus:outline-none">
             Inventario
           </button>
-          <button
-            onClick={() => navigate('/sales-history')}
-            className="text-base text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-3 py-2 rounded transition-colors focus:outline-none"
-          >
+          <button onClick={() => navigate('/sales-history')} className="text-base text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-3 py-2 rounded transition-colors focus:outline-none">
             Historial de ventas
           </button>
         </nav>
@@ -260,32 +177,17 @@ const Dashboard: React.FC = () => {
           <div className="flex-1 px-8 py-6 min-h-0 overflow-hidden">
             <PendingProductsList
               products={sortedProducts}
-              onMarkAsRestocked={handleMarkAsRestocked}
+              onMarkAsRestocked={() => {}}
               onProductClick={handleProductClick}
             />
           </div>
         </div>
 
         <div className="flex-[1] max-w-sm flex flex-col gap-4 p-6 overflow-y-auto">
-          <WarehouseKPIs
-            pendingCount={sortedProducts.length}
-            lastReplenishmentMinutes={lastReplenishmentMinutes}
-          />
-          <WarehouseSummary
-            pendingCount={sortedProducts.length}
-            lowStockZones={sortedProducts.some((p) => p.priority === 'urgent') ? 2 : 0}
-          />
+          <WarehouseKPIs pendingCount={sortedProducts.length} lastReplenishmentMinutes={lastReplenishmentMinutes} />
+          <WarehouseSummary pendingCount={sortedProducts.length} lowStockZones={sortedProducts.some((p) => p.priority === 'urgent') ? 2 : 0} />
         </div>
       </div>
-
-      <ProductDetailModal
-        product={selectedProduct}
-        isOpen={isProductModalOpen}
-        onClose={() => {
-          setIsProductModalOpen(false);
-          setSelectedProduct(null);
-        }}
-      />
     </div>
   );
 };

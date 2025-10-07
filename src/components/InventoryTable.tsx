@@ -22,7 +22,6 @@ import SupervisorGateButton from '@/components/security/SupervisorGateButton';
 // Tipos base generados desde Supabase
 type InventoryRow = Database['public']['Tables']['inventory']['Row'];
 type InventoryUpdate = Database['public']['Tables']['inventory']['Update'];
-type SalesInsert = Database['public']['Tables']['sales_history']['Insert'];
 
 // Extendemos con campos “legacy” opcionales usados en UI
 type InventoryRowLegacy = InventoryRow & {
@@ -147,115 +146,65 @@ const InventoryTable: React.FC = () => {
     });
   };
 
-  // 🛒 Registrar venta
+  // 🛒 Registrar venta VIA RPC (idempotente + lógica de última unidad en servidor)
   const registerSaleMutation = useMutation({
     mutationFn: async (productId: string) => {
       const product = inventoryData.find((p) => p.id === productId);
       if (!product) throw new Error('Producto no encontrado en memoria. Actualiza e inténtalo de nuevo.');
+      if (!product.sku) throw new Error('Este producto no tiene SKU; no se puede registrar la venta.');
 
       const currentSala = Number(product.stock_sala ?? 0);
+      const currentAlmacen = Number(product.stock_almacen ?? 0);
       if (!Number.isFinite(currentSala)) throw new Error('Valor de stock_sala inválido.');
       if (currentSala <= 0) throw new Error('No hay stock disponible en sala');
 
-      const newStockSala = currentSala - 1;
+      const wasLastUnit = currentSala === 1 && currentAlmacen === 0;
 
-      // 1) Actualiza inventario (baja 1 en sala)
-      {
-        const { error: updateError } = await supabase
-          .from('inventory')
-          .update({ stock_sala: newStockSala })
-          .eq('id', productId);
+      // Idempotency key simple
+      const idem = `ui-${product.id}-${Date.now()}`;
 
-        if (updateError) {
-          console.error('[registerSale] Error al actualizar inventory:', updateError);
-          throw updateError;
-        }
+      const { error } = await supabase.rpc('process_pos_event', {
+        p_idempotency_key: idem,
+        p_event_type: 'sale',
+        p_sku: product.sku,
+        p_quantity: 1,
+        p_point_of_sale_id: null,
+      });
+      if (error) {
+        console.error('[process_pos_event] error:', error);
+        throw new Error(error.message || 'Error en process_pos_event');
       }
 
-      // 2) Inserta en historial de ventas
-      {
-        const payload: SalesInsert = {
-          product_name: product.name ?? 'Producto',
-          sku: (product.sku ?? '—') as string,
-          size: (product.size ?? '—') as string,
-          color: (product.color ?? '—') as string,
-          quantity_sold: 1,
-          remaining_stock: newStockSala,
-          replenishment_generated: true,
-          sale_date: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-        };
-
-        const { error: saleErr } = await supabase.from('sales_history').insert(payload);
-        if (saleErr) {
-          console.error('[registerSale] Error al insertar en sales_history. payload=', payload, saleErr);
-          throw saleErr;
-        }
+      // Optimista: si era la última unidad, desaparece ya de la lista
+      if (wasLastUnit) {
+        queryClient.setQueryData<UIInventoryItem[]>(['inventory'], (prev) =>
+          (prev ?? []).filter((p) => p.id !== product.id)
+        );
       }
 
-      // 3) Cola de reposición: suma 1 (upsert manual)
-      {
-        const { data: rq, error: rqErr } = await supabase
-          .from('replenishment_queue')
-          .select('id, quantity_needed')
-          .eq('inventory_id', productId)
-          .maybeSingle();
-
-        if (rqErr && rqErr.code !== 'PGRST116') {
-          console.error('[registerSale] Error select replenishment_queue:', rqErr);
-          throw rqErr;
-        }
-
-        if (rq) {
-          const { error: updRQErr } = await supabase
-            .from('replenishment_queue')
-            .update({ quantity_needed: (rq.quantity_needed ?? 0) + 1 })
-            .eq('id', rq.id);
-
-          if (updRQErr) {
-            console.error('[registerSale] Error update replenishment_queue:', updRQErr);
-            throw updRQErr;
-          }
-        } else {
-          const { error: insRQErr } = await supabase.from('replenishment_queue').insert({
-            inventory_id: productId,
-            quantity_needed: 1,
-            priority: 'normal',
-          });
-          if (insRQErr) {
-            console.error('[registerSale] Error insert replenishment_queue:', insRQErr);
-            throw insRQErr;
-          }
-        }
-      }
-
-      return { productName: product.name };
+      return { productName: product.name, wasLastUnit };
     },
     onSuccess: (data) => {
+      // Refrescos
       queryClient.invalidateQueries({ queryKey: ['inventory'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-pendings'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-for-pendings'] });
       queryClient.invalidateQueries({ queryKey: ['replenishment-queue'] });
       queryClient.invalidateQueries({ queryKey: ['sales-history'] });
 
+      const msg = data.wasLastUnit
+        ? `Venta registrada. Era la última unidad: artículo archivado.`
+        : `Venta de "${data.productName}" registrada correctamente`;
+
       toast({
         title: 'Venta registrada',
-        description: `Venta de "${data.productName}" registrada correctamente`,
+        description: msg,
         duration: 3000,
       });
     },
     onError: (err: unknown) => {
       console.error('Error registrando venta:', err);
-
-      let msg = 'Error al registrar la venta. Revisa la consola por si hay una política RLS bloqueando la operación.';
-      if (err instanceof Error) {
-        msg = err.message;
-      } else if (typeof err === 'object' && err !== null && 'message' in err) {
-        const maybeMessage = (err as { message?: unknown }).message;
-        if (typeof maybeMessage === 'string') msg = maybeMessage;
-        else if (maybeMessage != null) msg = String(maybeMessage);
-      }
-
+      const msg = err instanceof Error ? err.message : 'Error al registrar la venta.';
       toast({
         title: 'Error al registrar venta',
         description: msg,
@@ -265,7 +214,7 @@ const InventoryTable: React.FC = () => {
     },
   });
 
-  // Lanzar toast de confirmación
+  // Lanzar toast de confirmación (centrado custom)
   const requestDelete = (item: UIInventoryItem) => {
     setPendingDelete(item);
     setConfirmOpen(true);
@@ -583,7 +532,11 @@ const InventoryTable: React.FC = () => {
                                 size="sm"
                                 variant="ghost"
                                 onClick={() => registerSaleMutation.mutate(item.id)}
-                                disabled={(item.stock_sala ?? 0) === 0 || registerSaleMutation.isPending}
+                                disabled={
+                                  (item.stock_sala ?? 0) === 0 ||
+                                  registerSaleMutation.isPending ||
+                                  !item.sku
+                                }
                                 className="h-8 w-8 p-0 hover:bg-green-100 transition-colors disabled:opacity-50"
                               >
                                 <ShoppingCart className="h-4 w-4 text-green-600" />
@@ -619,7 +572,7 @@ const InventoryTable: React.FC = () => {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                onClick={() => requestDelete(item)} // ← abre toast de confirmación
+                                onClick={() => requestDelete(item)} // ← abre confirmación custom
                                 className="h-8 w-8 p-0 hover:bg-red-100 transition-colors"
                               >
                                 <Trash2 className="h-4 w-4 text-red-600" />

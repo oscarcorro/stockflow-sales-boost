@@ -9,21 +9,7 @@ import ProductsPagination from './ProductsPagination';
 import EmptyProductsState from './EmptyProductsState';
 import { useProductFilters } from '../hooks/useProductFilters';
 import { categories } from '../constants/categories';
-
-interface PendingProduct {
-  id: string;
-  name: string;
-  size: string;
-  location: string;
-  imageUrl: string;
-  priority: 'normal' | 'urgent';
-  category?: string;
-  subcategory?: string;
-  color?: string;
-  ubicacion_almacen?: string;
-  price?: number | null;
-  quantityNeeded: number;     // 👈 NUEVO
-}
+import type { PendingProduct } from '@/types/pending';
 
 interface PendingProductsListProps {
   products: PendingProduct[];
@@ -37,14 +23,19 @@ const PendingProductsList: React.FC<PendingProductsListProps> = ({
   onProductClick
 }) => {
   const navigate = useNavigate();
+
+  // El hook no acepta genéricos → lo usamos tal cual y casteamos su salida a nuestro tipo compartido
   const {
     selectedCategory,
     selectedSubcategory,
-    filteredProducts,
+    filteredProducts: filteredFromHook,
     handleCategorySelect,
     handleSubcategorySelect,
     hasFilters
   } = useProductFilters(products);
+
+  // Cast seguro sin any (unknown → tipo compartido)
+  const filteredProducts = filteredFromHook as unknown as PendingProduct[];
 
   const [currentPage, setCurrentPage] = useState(1);
   const PRODUCTS_PER_PAGE = 5;
@@ -63,12 +54,10 @@ const PendingProductsList: React.FC<PendingProductsListProps> = ({
 
   const selectedCategoryData = categories.find(cat => cat.id === selectedCategory);
 
-  const handleSearchClick = () => {
-    navigate('/search');
-  };
+  const handleSearchClick = () => navigate('/search');
 
   const handleItemClickDefault = (p: PendingProduct) => {
-    navigate(`/product/${p.id}`);
+    navigate(`/product/${p.id}`, { state: { product: p } });
   };
 
   return (
